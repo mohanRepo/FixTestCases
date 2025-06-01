@@ -1,142 +1,126 @@
+#!/usr/bin/env python3
 import csv
-import uuid
-import time
-import subprocess
 import re
-import logging
+import subprocess
+import time
+import uuid
 from datetime import datetime
 from pathlib import Path
-from collections import defaultdict
+import logging
+import sys
 
-# Directories
-LOG_DIR = Path("logs")
-OUTPUT_DIR = Path("output")
-LOG_DIR.mkdir(exist_ok=True)
-OUTPUT_DIR.mkdir(exist_ok=True)
+# Setup paths
+BASE_DIR = Path(__file__).resolve().parent
+LOGS_DIR = BASE_DIR / "logs"
+OUTPUT_DIR = BASE_DIR / "output"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Files
-CURRENT_FILE = LOG_DIR / "Current"
-LOG_FILE = OUTPUT_DIR / "fix_test_runner.log"
+EXECUTION_ID = uuid.uuid4().hex[:8]
+RESULT_FILE = OUTPUT_DIR / f"results_{EXECUTION_ID}.csv"
+SUMMARY_FILE = OUTPUT_DIR / f"summary_{EXECUTION_ID}.csv"
+CURRENT_LOG = LOGS_DIR / "Current"
+MOCK_SENDER = BASE_DIR / "send_fix_message.sh"
 
-# Configure logging
+# Setup logging
 logging.basicConfig(
-    filename=LOG_FILE,
+    filename=BASE_DIR / f"test_run_{EXECUTION_ID}.log",
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-DELIMITER = '\x01'
+def parse_fix(fix_str, separator='|'):
+    return dict(field.split('=', 1) for field in fix_str.strip().split(separator) if '=' in field)
 
-def parse_fix_message(msg):
-    return dict(tag.split("=", 1) for tag in msg.strip().split(DELIMITER) if "=" in tag)
+def build_fix(fix_dict, separator='|'):
+    return separator.join(f"{k}={v}" for k, v in fix_dict.items())
 
-def build_fix_message(msg, updates, testcase_id):
-    fix_dict = parse_fix_message(msg.replace("|", DELIMITER))
-    fix_dict['11'] = f"Run_{testcase_id}_{uuid.uuid4().hex[:8]}"
-    fix_dict['52'] = datetime.utcnow().strftime("%Y%m%d-%H:%M:%S.%f")[:-3]
-    for pair in updates.split(";"):
-        if "=" in pair:
-            k, v = pair.split("=", 1)
-            fix_dict[k] = v
-    return DELIMITER.join(f"{k}={v}" for k, v in fix_dict.items())
+def update_fix_tags(fix_msg, updates):
+    fix_dict = parse_fix(fix_msg)
+    fix_dict.update(updates)
+    fix_dict['11'] = f"TestRun_{EXECUTION_ID}_{uuid.uuid4().hex[:4]}"
+    fix_dict['52'] = datetime.utcnow().strftime('%Y%m%d-%H:%M:%S')
+    return build_fix(fix_dict)
 
-def validate_fix_message(msg, validation_rules):
-    fix_dict = parse_fix_message(msg)
-    for rule in validation_rules.split(";"):
-        if "=" in rule:
-            k, expected = rule.split("=", 1)
-            actual = fix_dict.get(k)
-            if expected == "":
-                if actual is not None:
-                    return False
-            elif actual is None or not re.fullmatch(expected, actual):
-                return False
+def validate_tags(fix_msg, validations):
+    fix_dict = parse_fix(fix_msg, separator='\x01')
+    for tag, pattern in validations.items():
+        if tag not in fix_dict:
+            return False
+        if not re.fullmatch(pattern, fix_dict[tag]):
+            return False
     return True
 
-def run_mock_script(fix_msg):
-    subprocess.run(["bash", "./send_fix_message.sh", fix_msg], check=True)
-
-def extract_from_log(tag11, tag35, retries=3, delay=0.2):
+def grep_log(tag11, tag35, retries=3, delay=0.5):
     for _ in range(retries):
-        if CURRENT_FILE.exists():
-            with open(CURRENT_FILE, "r") as f:
+        if CURRENT_LOG.exists():
+            with CURRENT_LOG.open() as f:
                 for line in f:
-                    if tag11 in line and f"35={tag35}" in line:
+                    if f"11={tag11}" in line and f"35={tag35}" in line:
                         return line.strip()
         time.sleep(delay)
     return ""
 
+def run_test_case(row):
+    use_case_id = row["UseCaseID"]
+    test_case_id = row["TestCaseID"]
+    base_fix = row["BaseFIXMessage"]
+    updates = dict(tag.split('=', 1) for tag in row["TagsToUpdate"].split('|') if '=' in tag)
+    validations = dict(tag.split('=', 1) for tag in row["TagsToValidate"].split('|') if '=' in tag)
+    expected = row["ExpectedValidationResult"]
+
+    updated_fix = update_fix_tags(base_fix, updates)
+    logging.info(f"{test_case_id}: Updated FIX: {updated_fix}")
+
+    try:
+        subprocess.run([str(MOCK_SENDER), updated_fix], check=True)
+    except Exception as e:
+        logging.error(f"{test_case_id}: Error sending FIX - {e}")
+        return [use_case_id, test_case_id, updated_fix, "", "FAIL", expected]
+
+    tag11 = parse_fix(updated_fix).get("11")
+    tag35 = parse_fix(updated_fix).get("35")
+    processed_fix = grep_log(tag11, tag35)
+
+    if not processed_fix:
+        logging.warning(f"{test_case_id}: No match found in logs")
+        return [use_case_id, test_case_id, updated_fix, "", "FAIL", expected]
+
+    result = "PASS" if validate_tags(processed_fix, validations) else "FAIL"
+    processed_pipe = processed_fix.replace('\x01', '|')
+    return [use_case_id, test_case_id, updated_fix, processed_pipe, result, expected]
+
 def main(input_csv):
-    execution_id = f"TestRun_{uuid.uuid4().hex[:6]}"
-    results = []
-    summary = defaultdict(lambda: {"Total": 0, "Passed": 0, "Failed": 0})
-
-    logging.info(f"Starting test run: ExecutionID={execution_id}")
-
     with open(input_csv, newline='') as f:
         reader = csv.DictReader(f)
-        for row in reader:
-            use_case_id = row["UseCaseID"]
-            test_case_id = row["TestCaseID"]
-            base_msg = row["BaseFIXMessage"]
-            updates = row["TagsToUpdate"]
-            validations = row["TagsToValidate"]
-            expected = row["ExpectedValidationResult"]
+        results = [run_test_case(row) for row in reader]
 
-            logging.info(f"Processing TestCaseID={test_case_id} (UseCaseID={use_case_id})")
-
-            updated_msg = build_fix_message(base_msg, updates, test_case_id)
-            tag11 = re.search(r"11=([^\x01]+)", updated_msg).group(1)
-            tag35 = re.search(r"35=([^\x01]+)", updated_msg).group(1)
-
-            run_mock_script(updated_msg)
-            logging.info(f"Sent FIX message with tag 11={tag11}")
-
-            actual_msg = extract_from_log(tag11, tag35)
-            logging.info(f"Retrieved message from log for tag 11={tag11}")
-
-            actual_result = "PASS" if validate_fix_message(actual_msg, validations) else "FAIL"
-            logging.info(f"Validation {actual_result} for TestCaseID={test_case_id}")
-
-            results.append({
-                "ExecutionID": execution_id,
-                "UseCaseID": use_case_id,
-                "TestCaseID": test_case_id,
-                "UpdatedMessage": updated_msg,
-                "ActualMessage": actual_msg,
-                "Result": actual_result
-            })
-
-            summary[use_case_id]["Total"] += 1
-            summary[use_case_id]["Passed"] += int(actual_result == "PASS")
-            summary[use_case_id]["Failed"] += int(actual_result == "FAIL")
-
-    # Write result file
-    result_file = OUTPUT_DIR / f"{execution_id}_results.csv"
-    with open(result_file, "w", newline='') as f:
-        fieldnames = ["ExecutionID", "UseCaseID", "TestCaseID", "UpdatedMessage", "ActualMessage", "Result"]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
+    headers = ["UseCaseID", "TestCaseID", "UpdatedFIX", "ProcessedFIX", "ValidationResult", "ExpectedValidationResult"]
+    with open(RESULT_FILE, "w", newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(headers)
         writer.writerows(results)
 
-    # Write summary file
-    summary_file = OUTPUT_DIR / f"{execution_id}_summary.csv"
-    with open(summary_file, "w", newline='') as f:
-        fieldnames = ["ExecutionID", "UseCaseID", "Total", "Passed", "Failed"]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for ucid, stats in summary.items():
-            writer.writerow({
-                "ExecutionID": execution_id,
-                "UseCaseID": ucid,
-                **stats
-            })
+    summary = {}
+    for row in results:
+        ucid = row[0]
+        outcome = row[4]
+        summary.setdefault(ucid, {"PASS": 0, "FAIL": 0})
+        summary[ucid][outcome] += 1
 
-    logging.info(f"✅ Test run completed. Results: {result_file}, Summary: {summary_file}")
+    with open(SUMMARY_FILE, "w", newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(["UseCaseID", "PASS", "FAIL", "TOTAL"])
+        for ucid, counts in summary.items():
+            total = counts["PASS"] + counts["FAIL"]
+            writer.writerow([ucid, counts["PASS"], counts["FAIL"], total])
+
+    print(f"Results: {RESULT_FILE}")
+    print(f"Summary: {SUMMARY_FILE}")
+    logging.info("Test run complete")
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) != 2:
-        print("Usage: python fix_test_runner.py test_cases.csv")
+    if len(sys.argv) < 2:
+        print("Usage: python3 fix_test_runner.py <test_cases.csv>")
     else:
         main(sys.argv[1])
