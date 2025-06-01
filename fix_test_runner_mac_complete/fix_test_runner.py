@@ -1,16 +1,31 @@
-
 import csv
 import uuid
 import time
 import subprocess
 import re
+import logging
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
 
-DELIMITER = '\x01'
+# Directories
 LOG_DIR = Path("logs")
+OUTPUT_DIR = Path("output")
+LOG_DIR.mkdir(exist_ok=True)
+OUTPUT_DIR.mkdir(exist_ok=True)
+
+# Files
 CURRENT_FILE = LOG_DIR / "Current"
+LOG_FILE = OUTPUT_DIR / "fix_test_runner.log"
+
+# Configure logging
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+DELIMITER = '\x01'
 
 def parse_fix_message(msg):
     return dict(tag.split("=", 1) for tag in msg.strip().split(DELIMITER) if "=" in tag)
@@ -55,7 +70,8 @@ def main(input_csv):
     execution_id = f"TestRun_{uuid.uuid4().hex[:6]}"
     results = []
     summary = defaultdict(lambda: {"Total": 0, "Passed": 0, "Failed": 0})
-    LOG_DIR.mkdir(exist_ok=True)
+
+    logging.info(f"Starting test run: ExecutionID={execution_id}")
 
     with open(input_csv, newline='') as f:
         reader = csv.DictReader(f)
@@ -67,14 +83,20 @@ def main(input_csv):
             validations = row["TagsToValidate"]
             expected = row["ExpectedValidationResult"]
 
-            updated_msg = build_fix_message(base_msg, updates, test_case_id)
-            run_mock_script(updated_msg)
+            logging.info(f"Processing TestCaseID={test_case_id} (UseCaseID={use_case_id})")
 
+            updated_msg = build_fix_message(base_msg, updates, test_case_id)
             tag11 = re.search(r"11=([^\x01]+)", updated_msg).group(1)
             tag35 = re.search(r"35=([^\x01]+)", updated_msg).group(1)
 
+            run_mock_script(updated_msg)
+            logging.info(f"Sent FIX message with tag 11={tag11}")
+
             actual_msg = extract_from_log(tag11, tag35)
+            logging.info(f"Retrieved message from log for tag 11={tag11}")
+
             actual_result = "PASS" if validate_fix_message(actual_msg, validations) else "FAIL"
+            logging.info(f"Validation {actual_result} for TestCaseID={test_case_id}")
 
             results.append({
                 "ExecutionID": execution_id,
@@ -89,16 +111,16 @@ def main(input_csv):
             summary[use_case_id]["Passed"] += int(actual_result == "PASS")
             summary[use_case_id]["Failed"] += int(actual_result == "FAIL")
 
-    # Write results
-    result_file = f"{execution_id}_results.csv"
+    # Write result file
+    result_file = OUTPUT_DIR / f"{execution_id}_results.csv"
     with open(result_file, "w", newline='') as f:
         fieldnames = ["ExecutionID", "UseCaseID", "TestCaseID", "UpdatedMessage", "ActualMessage", "Result"]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(results)
 
-    # Write summary
-    summary_file = f"{execution_id}_summary.csv"
+    # Write summary file
+    summary_file = OUTPUT_DIR / f"{execution_id}_summary.csv"
     with open(summary_file, "w", newline='') as f:
         fieldnames = ["ExecutionID", "UseCaseID", "Total", "Passed", "Failed"]
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -110,7 +132,7 @@ def main(input_csv):
                 **stats
             })
 
-    print(f"✅ Test run completed. Results: {result_file}, Summary: {summary_file}")
+    logging.info(f"✅ Test run completed. Results: {result_file}, Summary: {summary_file}")
 
 if __name__ == "__main__":
     import sys
