@@ -9,13 +9,18 @@ from pathlib import Path
 import logging
 import sys
 
-# Setup paths
+# =================== CONFIGURATION ===================
+DELIMITER = '|'  # Custom FIX field separator used in base/test files
+SOH = '\x01'     # Standard FIX protocol separator for real transmission
+
+# Setup directories
 BASE_DIR = Path(__file__).resolve().parent
 LOGS_DIR = BASE_DIR / "logs"
 OUTPUT_DIR = BASE_DIR / "output"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+# Generate execution ID
 EXECUTION_ID = uuid.uuid4().hex[:8]
 RESULT_FILE = OUTPUT_DIR / f"results_{EXECUTION_ID}.csv"
 SUMMARY_FILE = OUTPUT_DIR / f"summary_{EXECUTION_ID}.csv"
@@ -29,10 +34,12 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-def parse_fix(fix_str, separator='|'):
+# =================== HELPER FUNCTIONS ===================
+
+def parse_fix(fix_str, separator=DELIMITER):
     return dict(field.split('=', 1) for field in fix_str.strip().split(separator) if '=' in field)
 
-def build_fix(fix_dict, separator='|'):
+def build_fix(fix_dict, separator=DELIMITER):
     return separator.join(f"{k}={v}" for k, v in fix_dict.items())
 
 def update_fix_tags(fix_msg, updates):
@@ -43,7 +50,7 @@ def update_fix_tags(fix_msg, updates):
     return build_fix(fix_dict)
 
 def validate_tags(fix_msg, validations):
-    fix_dict = parse_fix(fix_msg, separator='\x01')
+    fix_dict = parse_fix(fix_msg, separator=SOH)
     for tag, pattern in validations.items():
         if tag not in fix_dict:
             return False
@@ -61,19 +68,23 @@ def grep_log(tag11, tag35, retries=3, delay=0.5):
         time.sleep(delay)
     return ""
 
+# =================== CORE TEST RUN ===================
+
 def run_test_case(row):
     use_case_id = row["UseCaseID"]
     test_case_id = row["TestCaseID"]
     base_fix = row["BaseFIXMessage"]
-    updates = dict(tag.split('=', 1) for tag in row["TagsToUpdate"].split('|') if '=' in tag)
-    validations = dict(tag.split('=', 1) for tag in row["TagsToValidate"].split('|') if '=' in tag)
+    updates = dict(tag.split('=', 1) for tag in row["TagsToUpdate"].split(DELIMITER) if '=' in tag)
+    validations = dict(tag.split('=', 1) for tag in row["TagsToValidate"].split(DELIMITER) if '=' in tag)
     expected = row["ExpectedValidationResult"]
 
     updated_fix = update_fix_tags(base_fix, updates)
     logging.info(f"{test_case_id}: Updated FIX: {updated_fix}")
 
+    soh_fix = updated_fix.replace(DELIMITER, SOH)
+
     try:
-        subprocess.run([str(MOCK_SENDER), updated_fix], check=True)
+        subprocess.run([str(MOCK_SENDER), soh_fix], check=True)
     except Exception as e:
         logging.error(f"{test_case_id}: Error sending FIX - {e}")
         return [use_case_id, test_case_id, updated_fix, "", "FAIL", expected]
@@ -87,7 +98,7 @@ def run_test_case(row):
         return [use_case_id, test_case_id, updated_fix, "", "FAIL", expected]
 
     result = "PASS" if validate_tags(processed_fix, validations) else "FAIL"
-    processed_pipe = processed_fix.replace('\x01', '|')
+    processed_pipe = processed_fix.replace(SOH, DELIMITER)
     return [use_case_id, test_case_id, updated_fix, processed_pipe, result, expected]
 
 def main(input_csv):
