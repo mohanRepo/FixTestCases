@@ -44,9 +44,18 @@ def build_fix(fix_dict, separator=DELIMITER):
 
 def update_fix_tags(fix_msg, updates):
     fix_dict = parse_fix(fix_msg)
-    fix_dict.update(updates)
+
+    # Apply updates and deletions
+    for tag, val in updates.items():
+        if val == '':
+            fix_dict.pop(tag, None)  # Delete the tag
+        else:
+            fix_dict[tag] = val
+
+    # Always update tags 11 and 52
     fix_dict['11'] = f"TestRun_{EXECUTION_ID}_{uuid.uuid4().hex[:4]}"
     fix_dict['52'] = datetime.utcnow().strftime('%Y%m%d-%H:%M:%S')
+
     return build_fix(fix_dict)
 
 def validate_tags(fix_msg, validations):
