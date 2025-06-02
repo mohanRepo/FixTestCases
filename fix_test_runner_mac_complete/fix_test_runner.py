@@ -56,7 +56,7 @@ def update_fix_tags(fix_msg, updates):
     fix_dict['11'] = f"TestRun_{EXECUTION_ID}_{uuid.uuid4().hex[:4]}"
     fix_dict['52'] = datetime.utcnow().strftime('%Y%m%d-%H:%M:%S')
 
-    return build_fix(fix_dict), fix_dict['11'], fix_dict['35']
+    return build_fix(fix_dict), fix_dict['11'], fix_dict.get('35', '')
 
 
 def send_to_mock(fix_message):
@@ -162,3 +162,14 @@ def run_tests(input_file_path):
             writer.writerow([uc, stats["PASS"], stats["FAIL"]])
 
     logger.info(f"Test run completed. Results saved to {RESULT_FILE}, summary to {SUMMARY_FILE}")
+
+
+# === MAIN ===
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run FIX message validation tests from a CSV input file.")
+    parser.add_argument("input_csv", help="Path to the input CSV file")
+    args = parser.parse_args()
+
+    run_tests(args.input_csv)
