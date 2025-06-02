@@ -58,14 +58,20 @@ def update_fix_tags(fix_msg, updates):
 
     return build_fix(fix_dict)
 
-def validate_tags(fix_msg, validations):
-    fix_dict = parse_fix(fix_msg, separator=SOH)
-    for tag, pattern in validations.items():
-        if tag not in fix_dict:
-            return False
-        if not re.fullmatch(pattern, fix_dict[tag]):
-            return False
-    return True
+def validate_tags(fix_msg, validations, logger, test_case_id):
+    fix_dict = parse_fix(fix_msg)
+    all_passed = True
+
+    for tag, expected_pattern in validations.items():
+        actual_value = fix_dict.get(tag)
+        if actual_value is None:
+            logger.error(f"{test_case_id} - Validation failed for tag {tag}: expected pattern '{expected_pattern}', tag not found")
+            all_passed = False
+        elif not re.fullmatch(expected_pattern, actual_value):
+            logger.error(f"{test_case_id} - Validation failed for tag {tag}: expected pattern '{expected_pattern}', actual value '{actual_value}'")
+            all_passed = False
+
+    return all_passed
 
 def grep_log(tag11, tag35, retries=3, delay=0.5):
     for _ in range(retries):
@@ -106,7 +112,7 @@ def run_test_case(row):
         logging.warning(f"{test_case_id}: No match found in logs")
         return [use_case_id, test_case_id, updated_fix, "", "FAIL", expected]
 
-    result = "PASS" if validate_tags(processed_fix, validations) else "FAIL"
+    result = "PASS" if validate_tags(processed_fix, validations, logging , test_case_id) else "FAIL"
     processed_pipe = processed_fix.replace(SOH, DELIMITER)
     return [use_case_id, test_case_id, updated_fix, processed_pipe, result, expected]
 
