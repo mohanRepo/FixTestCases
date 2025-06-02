@@ -11,15 +11,15 @@ from pathlib import Path
 
 # Configuration
 FIELD_SEPARATOR = '|'
-SOD = '\x01'  # Start of Day delimiter used in FIX messages
+SOD = '\x01'  # FIX delimiter
 MAX_RETRIES = 3
-WAIT_TIME = 0.3  # seconds between retries
+WAIT_TIME = 0.3  # Seconds between retries
 
 # Directories
 BASE_DIR = Path(__file__).resolve().parent
 INPUT_DIR = BASE_DIR / 'input'
 OUTPUT_DIR = BASE_DIR / 'output'
-LOG_DIR = OUTPUT_DIR
+LOG_DIR = BASE_DIR / 'logs'
 
 # Logging setup
 EXECUTION_ID = datetime.utcnow().strftime("%Y%m%d%H%M%S")
@@ -42,7 +42,7 @@ def update_fix_tags(fix_msg, updates, test_case_id):
         else:
             fix_dict[tag] = val
 
-    # Always set tags 11 and 52
+    # Always override tags 11 and 52
     short_uuid = uuid.uuid4().hex[:4]
     fix_dict['11'] = f"{test_case_id}_{short_uuid}"
     fix_dict['52'] = datetime.utcnow().strftime('%Y%m%d-%H:%M:%S')
@@ -102,7 +102,7 @@ def run_tests(input_file, result_file, summary_file):
         result_writer = csv.writer(result_out)
         summary_writer = csv.writer(summary_out)
 
-        result_writer.writerow(['UseCaseID', 'TestCaseID', 'Result', 'FIXMessage'])
+        result_writer.writerow(['UseCaseID', 'TestCaseID', 'Result', 'SentFIXMessage', 'ProcessedFIXMessage'])
         summary_writer.writerow(['UseCaseID', 'Passed', 'Failed', 'Total'])
 
         summary_stats = {}
@@ -112,10 +112,12 @@ def run_tests(input_file, result_file, summary_file):
             test_case_id = row['TestCaseID']
             base_msg = row['BaseMessage'].replace(FIELD_SEPARATOR, SOD)
 
+            # Parse TagsToUpdate
             updates = {}
             if row['TagsToUpdate']:
-                updates = dict(tag_val.split('=') for tag_val in row['TagsToUpdate'].split(FIELD_SEPARATOR) if '=' in tag_val)
+                updates = dict(tag_val.split('=') for tag_val in row['TagsToUpdate'].split(FIELD_SEPARATOR) if '=' in tag_val or tag_val.strip().endswith('='))
 
+            # Parse TagsToValidate
             validations = {}
             if row['TagsToValidate']:
                 validations = dict(tag_val.split('=') for tag_val in row['TagsToValidate'].split(FIELD_SEPARATOR) if '=' in tag_val)
@@ -123,8 +125,11 @@ def run_tests(input_file, result_file, summary_file):
             updated_msg, tag11, tag35 = update_fix_tags(base_msg, updates, test_case_id)
             processed_msg = run_fix_process(updated_msg, tag11, tag35)
 
+            sent_msg_clean = updated_msg.replace(SOD, FIELD_SEPARATOR)
+            processed_msg_clean = processed_msg.replace(SOD, FIELD_SEPARATOR) if processed_msg else ''
+
             if not processed_msg:
-                result_writer.writerow([use_case_id, test_case_id, 'FAIL', updated_msg.replace(SOD, FIELD_SEPARATOR)])
+                result_writer.writerow([use_case_id, test_case_id, 'FAIL', sent_msg_clean, ''])
                 summary_stats.setdefault(use_case_id, {'Passed': 0, 'Failed': 0})['Failed'] += 1
                 continue
 
@@ -133,7 +138,7 @@ def run_tests(input_file, result_file, summary_file):
             if not valid:
                 logging.error(f"Test {test_case_id} failed due to tags: {', '.join(failed_tags)}")
 
-            result_writer.writerow([use_case_id, test_case_id, result_status, processed_msg.replace(SOD, FIELD_SEPARATOR)])
+            result_writer.writerow([use_case_id, test_case_id, result_status, sent_msg_clean, processed_msg_clean])
             key = summary_stats.setdefault(use_case_id, {'Passed': 0, 'Failed': 0})
             key['Passed' if valid else 'Failed'] += 1
 
