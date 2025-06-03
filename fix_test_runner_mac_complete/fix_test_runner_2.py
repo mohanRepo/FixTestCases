@@ -1,28 +1,30 @@
 import csv
 import os
-import re
-import subprocess
-import time
 import uuid
 import logging
+import subprocess
+import time
 from datetime import datetime
 from typing import Dict, List
 
 # ---- Configuration ----
 FIELD_DELIMITER = "|"
 MULTI_VAL_DELIMITER = "~"
-LOG_DIR = "logs"
+OUTPUT_DIR = "output"
 LINUX_PROCESS_SCRIPT = "./send_fix_message.sh"
-CURRENT_LOG_FILE = os.path.join(LOG_DIR, "Current")
+CURRENT_LOG_FILE = "./logs/Current"  # Assuming logs/Current is fixed location
 
 # ---- Setup Execution Context ----
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 execution_id = datetime.now().strftime("%y%m%d_%H%M%S")
-result_file = f"test_result_{execution_id}.csv"
-summary_file = f"test_summary_{execution_id}.csv"
-log_file = f"fix_test_run_{execution_id}.log"
+result_file = os.path.join(OUTPUT_DIR, f"test_result_{execution_id}.csv")
+summary_file = os.path.join(OUTPUT_DIR, f"test_summary_{execution_id}.csv")
+log_file = os.path.join(OUTPUT_DIR, f"fix_test_run_{execution_id}.log")
 
 # ---- Logging ----
 logging.basicConfig(filename=log_file, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+log = logging.getLogger()
 
 # ---- Utility Functions ----
 def parse_fix(fix_str: str, delimiter=FIELD_DELIMITER) -> Dict[str, str]:
@@ -39,7 +41,9 @@ def update_fix(base_fix: str, updates: Dict[str, str]) -> str:
         else:
             tags[k] = v
     tags["52"] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    return build_fix(tags)
+    updated_fix = build_fix(tags)
+    log.info(f"Updated FIX message: {updated_fix}")
+    return updated_fix
 
 def validate_tags(expected: Dict[str, str], actual: Dict[str, str], testcase_id: str, tag11: str) -> (bool, List[str]):
     result = True
@@ -61,13 +65,16 @@ def validate_tags(expected: Dict[str, str], actual: Dict[str, str], testcase_id:
 
 def send_fix_message(fix_msg: str, tag11: str, msg_type: str) -> str:
     fix_msg_sod = fix_msg.replace(FIELD_DELIMITER, '\x01')
+    log.info(f"Sending FIX message to Linux process: {fix_msg}")
     subprocess.run([LINUX_PROCESS_SCRIPT, fix_msg_sod])
-    for _ in range(5):
+    for attempt in range(5):
         time.sleep(0.3)
         with open(CURRENT_LOG_FILE, "r") as f:
             for line in f:
                 if f"11={tag11}" in line and f"35={msg_type}" in line:
+                    log.info(f"Received response from Linux process: {line.strip().replace(chr(1), '|')}")
                     return line.strip()
+    log.error(f"No response found for tag 11={tag11}")
     return ""
 
 def expand_test_cases(row: Dict[str, str]) -> List[Dict[str, str]]:
@@ -80,45 +87,49 @@ def expand_test_cases(row: Dict[str, str]) -> List[Dict[str, str]]:
 
     for part in update_parts:
         if "~" in part:
-            tag, values = part.split("=")
+            tag, values = part.split("=", 1)
             multi_tag = tag
             multi_values = values.split(MULTI_VAL_DELIMITER)
         else:
             if "=" in part:
-                tag, value = part.split("=")
+                tag, value = part.split("=", 1)
                 update_dict[tag] = value
 
     expanded_cases = []
-    for idx, val in enumerate(multi_values):
+    for idx, val in enumerate(multi_values or [""]):
         update = update_dict.copy()
-        update[multi_tag] = val
+        if multi_tag:
+            update[multi_tag] = val
 
         validate = {}
         for part in validate_parts:
-            if "=" in part:
-                tag, values = part.split("=")
-                val_list = values.split(MULTI_VAL_DELIMITER)
-                if tag == multi_tag and idx < len(val_list):
-                    validate[tag] = val_list[idx]
-                elif "~" in values:
-                    continue
-                else:
-                    validate[tag] = values
-        expanded_cases.append({
+            if "=" not in part:
+                continue
+            tag, values = part.split("=", 1)
+            val_list = values.split(MULTI_VAL_DELIMITER)
+            if tag == multi_tag and idx < len(val_list):
+                validate[tag] = val_list[idx]
+            elif "~" in values:
+                continue
+            else:
+                validate[tag] = values
+        expanded_case = {
             "UseCaseID": row["UseCaseID"],
             "TestCaseID": row["TestCaseID"],
             "BaseMessage": row["BaseMessage"],
             "TagsToUpdate": update,
             "TagsToValidate": validate
-        })
+        }
+        log.info(f"Expanded test case: {expanded_case}")
+        expanded_cases.append(expanded_case)
     return expanded_cases
 
 # ---- Main Execution ----
 def run_test(input_file: str):
-    logging.info(f"Input File: {input_file}")
-    logging.info(f"Result File: {result_file}")
-    logging.info(f"Summary File: {summary_file}")
-    logging.info(f"Log File: {log_file}")
+    log.info(f"Execution started with Input File: {input_file}")
+    log.info(f"Result File: {result_file}")
+    log.info(f"Summary File: {summary_file}")
+    log.info(f"Log File: {log_file}")
 
     total = 0
     passed = 0
@@ -128,6 +139,7 @@ def run_test(input_file: str):
     with open(input_file, newline="") as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
+            log.info(f"Processing input row: {row}")
             cases = expand_test_cases(row)
             for case in cases:
                 total += 1
@@ -145,10 +157,10 @@ def run_test(input_file: str):
                 is_pass, messages = validate_tags(case["TagsToValidate"], received_tags, test_case_id, tag11)
                 if is_pass:
                     passed += 1
-                    logging.info(f"{tag11} [PASS]")
+                    log.info(f"Test Case {test_case_id} [PASS]")
                 else:
                     failed += 1
-                    logging.error(f"{tag11} [FAIL] Reason(s): {' | '.join(messages)}")
+                    log.error(f"Test Case {test_case_id} [FAIL] Reason(s): {' | '.join(messages)}")
 
                 result_rows.append({
                     "UseCaseID": usecase_id,
@@ -157,7 +169,7 @@ def run_test(input_file: str):
                     "ValidationResult": "PASS" if is_pass else "FAIL",
                     "ValidationDetails": " | ".join(messages),
                     "SentFixMessage": sent_msg,
-                    "ReceivedFixMessage": received_msg
+                    "ReceivedFixMessage": received_msg.replace('\x01', FIELD_DELIMITER) if received_msg else ""
                 })
 
     # Write results
@@ -185,6 +197,7 @@ def run_test(input_file: str):
         for ucid, stats in summary_data.items():
             writer.writerow([ucid, stats["Total"], stats["Passed"], stats["Failed"]])
 
+    log.info(f"Execution finished. Total Tests: {total}, Passed: {passed}, Failed: {failed}")
 
 # ---- Entry Point ----
 if __name__ == "__main__":
