@@ -6,7 +6,6 @@ import time
 import uuid
 import logging
 from datetime import datetime
-from itertools import product
 from typing import Dict, List
 
 # ---- Configuration ----
@@ -34,7 +33,11 @@ def build_fix(tags: Dict[str, str]) -> str:
 
 def update_fix(base_fix: str, updates: Dict[str, str]) -> str:
     tags = parse_fix(base_fix)
-    tags.update(updates)
+    for k, v in updates.items():
+        if v == "":
+            tags.pop(k, None)
+        else:
+            tags[k] = v
     tags["52"] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     return build_fix(tags)
 
@@ -43,17 +46,17 @@ def validate_tags(expected: Dict[str, str], actual: Dict[str, str], testcase_id:
     messages = []
     for tag, exp_val in expected.items():
         act_val = actual.get(tag)
-        if exp_val == "__DELETE__":
+        if exp_val == "":
             if tag in actual:
-                messages.append(f"FAIL: Tag {tag} was expected to be deleted but found {act_val} [TC: {testcase_id}, 11={tag11}]")
+                messages.append(f"FAIL: Tag {tag} should be deleted but found {act_val} [TC: {testcase_id}, 11={tag11}]")
                 result = False
             else:
                 messages.append(f"PASS: Tag {tag} correctly deleted [TC: {testcase_id}, 11={tag11}]")
         elif act_val != exp_val:
-            messages.append(f"FAIL: Tag {tag} value mismatch. Expected: {exp_val}, Actual: {act_val} [TC: {testcase_id}, 11={tag11}]")
+            messages.append(f"FAIL: Tag {tag} mismatch. Expected: {exp_val}, Got: {act_val} [TC: {testcase_id}, 11={tag11}]")
             result = False
         else:
-            messages.append(f"PASS: Tag {tag} matched with value {exp_val} [TC: {testcase_id}, 11={tag11}]")
+            messages.append(f"PASS: Tag {tag} matched value {exp_val} [TC: {testcase_id}, 11={tag11}]")
     return result, messages
 
 def send_fix_message(fix_msg: str, tag11: str, msg_type: str) -> str:
@@ -67,8 +70,8 @@ def send_fix_message(fix_msg: str, tag11: str, msg_type: str) -> str:
     return ""
 
 def expand_test_cases(row: Dict[str, str]) -> List[Dict[str, str]]:
-    update_parts = row["TagsToUpdate"].split("|")
-    validate_parts = row["TagsToValidate"].split("|")
+    update_parts = row["TagsToUpdate"].split(FIELD_DELIMITER)
+    validate_parts = row["TagsToValidate"].split(FIELD_DELIMITER)
 
     update_dict = {}
     multi_tag = None
@@ -80,7 +83,7 @@ def expand_test_cases(row: Dict[str, str]) -> List[Dict[str, str]]:
             multi_tag = tag
             multi_values = values.split(MULTI_VAL_DELIMITER)
         else:
-            tag, value = part.split("=")
+            tag, value = part.split("=", 1)
             update_dict[tag] = value
 
     expanded_cases = []
@@ -90,7 +93,7 @@ def expand_test_cases(row: Dict[str, str]) -> List[Dict[str, str]]:
 
         validate = {}
         for part in validate_parts:
-            tag, values = part.split("=")
+            tag, values = part.split("=", 1)
             val_list = values.split(MULTI_VAL_DELIMITER)
             if tag == multi_tag and idx < len(val_list):
                 validate[tag] = val_list[idx]
@@ -154,13 +157,11 @@ def run_test(input_file: str):
                     "ReceivedFixMessage": received_msg
                 })
 
-    # Write results
     with open(result_file, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=result_rows[0].keys())
         writer.writeheader()
         writer.writerows(result_rows)
 
-    # Aggregate per UseCaseID
     summary_data = {}
     for row in result_rows:
         ucid = row["UseCaseID"]
@@ -172,13 +173,11 @@ def run_test(input_file: str):
         else:
             summary_data[ucid]["Failed"] += 1
 
-    # Write summary file
     with open(summary_file, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["UseCaseID", "Total", "Passed", "Failed"])
         for ucid, stats in summary_data.items():
             writer.writerow([ucid, stats["Total"], stats["Passed"], stats["Failed"]])
-
 
 # ---- Entry Point ----
 if __name__ == "__main__":
