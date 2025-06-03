@@ -1,5 +1,6 @@
 import csv
 import os
+import re
 import uuid
 import logging
 import subprocess
@@ -12,7 +13,7 @@ FIELD_DELIMITER = "|"
 MULTI_VAL_DELIMITER = "~"
 OUTPUT_DIR = "output"
 LINUX_PROCESS_SCRIPT = "./send_fix_message.sh"
-CURRENT_LOG_FILE = "./logs/Current"  # Assuming logs/Current is fixed location
+CURRENT_LOG_FILE = "./logs/Current"  # Assuming Current is in logs
 
 # ---- Setup Execution Context ----
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -40,7 +41,8 @@ def update_fix(base_fix: str, updates: Dict[str, str]) -> str:
             tags.pop(k, None)
         else:
             tags[k] = v
-    tags["52"] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Correct FIX UTC timestamp format
+    tags["52"] = datetime.utcnow().strftime("%Y%m%d-%H:%M:%S")
     updated_fix = build_fix(tags)
     log.info(f"Updated FIX message: {updated_fix}")
     return updated_fix
@@ -48,19 +50,20 @@ def update_fix(base_fix: str, updates: Dict[str, str]) -> str:
 def validate_tags(expected: Dict[str, str], actual: Dict[str, str], testcase_id: str, tag11: str) -> (bool, List[str]):
     result = True
     messages = []
-    for tag, exp_val in expected.items():
+    for tag, exp_pattern in expected.items():
         act_val = actual.get(tag)
-        if exp_val == "":
+        if exp_pattern == "":
             if tag in actual:
-                messages.append(f"FAIL: Tag {tag} was expected to be deleted but found {act_val} [TC: {testcase_id}, 11={tag11}]")
+                messages.append(f"FAIL: Tag {tag} expected deleted but found {act_val} [TC: {testcase_id}, 11={tag11}]")
                 result = False
             else:
                 messages.append(f"PASS: Tag {tag} correctly deleted [TC: {testcase_id}, 11={tag11}]")
-        elif act_val != exp_val:
-            messages.append(f"FAIL: Tag {tag} value mismatch. Expected: {exp_val}, Actual: {act_val} [TC: {testcase_id}, 11={tag11}]")
-            result = False
         else:
-            messages.append(f"PASS: Tag {tag} matched with value {exp_val} [TC: {testcase_id}, 11={tag11}]")
+            if act_val is None or not re.fullmatch(exp_pattern, act_val):
+                messages.append(f"FAIL: Tag {tag} regex mismatch. Pattern: {exp_pattern}, Actual: {act_val} [TC: {testcase_id}, 11={tag11}]")
+                result = False
+            else:
+                messages.append(f"PASS: Tag {tag} regex match successful [{exp_pattern}] [TC: {testcase_id}, 11={tag11}]")
     return result, messages
 
 def send_fix_message(fix_msg: str, tag11: str, msg_type: str) -> str:
