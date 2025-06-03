@@ -1,4 +1,3 @@
-
 import csv
 import os
 import re
@@ -14,7 +13,7 @@ FIELD_DELIMITER = "|"
 MULTI_VAL_DELIMITER = "~"
 OUTPUT_DIR = "output"
 LINUX_PROCESS_SCRIPT = "./send_fix_message.sh"
-CURRENT_LOG_FILE = "./logs/Current"
+CURRENT_LOG_FILE = "./logs/Current"  # Assuming Current is in logs
 
 # ---- Setup Execution Context ----
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -28,6 +27,7 @@ log_file = os.path.join(OUTPUT_DIR, f"fix_test_run_{execution_id}.log")
 logging.basicConfig(filename=log_file, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 log = logging.getLogger()
 
+# ---- Utility Functions ----
 def parse_fix(fix_str: str, delimiter=FIELD_DELIMITER) -> Dict[str, str]:
     return dict(item.split("=", 1) for item in fix_str.split(delimiter) if "=" in item)
 
@@ -126,6 +126,7 @@ def expand_test_cases(row: Dict[str, str]) -> List[Dict[str, str]]:
         expanded_cases.append(expanded_case)
     return expanded_cases
 
+# ---- Main Execution ----
 def run_test(input_file: str):
     log.info(f"Execution started with Input File: {input_file}")
     log.info(f"Result File: {result_file}")
@@ -146,9 +147,18 @@ def run_test(input_file: str):
                 total += 1
                 usecase_id = case["UseCaseID"]
                 test_case_id = case["TestCaseID"]
-                tag11 = f"{test_case_id}_{uuid.uuid4().hex[:4]}"
+
+                tags_to_update = case["TagsToUpdate"]
+
+                # NEW LOGIC HERE
+                if "11" in tags_to_update and tags_to_update["11"]:
+                    tag11 = tags_to_update["11"]
+                else:
+                    tag11 = f"{test_case_id}_{uuid.uuid4().hex[:4]}"
+                    tags_to_update["11"] = tag11
+
                 base_msg = case["BaseMessage"]
-                updated_fix = update_fix(base_msg, {**case["TagsToUpdate"], "11": tag11})
+                updated_fix = update_fix(base_msg, tags_to_update)
                 msg_type = parse_fix(updated_fix).get("35", "D")
 
                 sent_msg = updated_fix
@@ -173,11 +183,13 @@ def run_test(input_file: str):
                     "ReceivedFixMessage": received_msg.replace('\x01', FIELD_DELIMITER) if received_msg else ""
                 })
 
+    # Write results
     with open(result_file, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=result_rows[0].keys())
         writer.writeheader()
         writer.writerows(result_rows)
 
+    # Aggregate per UseCaseID
     summary_data = {}
     for row in result_rows:
         ucid = row["UseCaseID"]
@@ -189,6 +201,7 @@ def run_test(input_file: str):
         else:
             summary_data[ucid]["Failed"] += 1
 
+    # Write summary file
     with open(summary_file, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["UseCaseID", "Total", "Passed", "Failed"])
@@ -197,9 +210,10 @@ def run_test(input_file: str):
 
     log.info(f"Execution finished. Total Tests: {total}, Passed: {passed}, Failed: {failed}")
 
+# ---- Entry Point ----
 if __name__ == "__main__":
     import sys
     if len(sys.argv) < 2:
-        print("Usage: python fix_test_runner_base.py <input_csv_file>")
+        print("Usage: python fix_test_runner.py <input_csv_file>")
         sys.exit(1)
     run_test(sys.argv[1])
