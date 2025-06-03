@@ -25,8 +25,8 @@ log_file = f"fix_test_run_{execution_id}.log"
 logging.basicConfig(filename=log_file, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ---- Utility Functions ----
-def parse_fix(fix_str: str) -> Dict[str, str]:
-    return dict(item.split("=", 1) for item in fix_str.split(FIELD_DELIMITER) if "=" in item)
+def parse_fix(fix_str: str, delimiter=FIELD_DELIMITER) -> Dict[str, str]:
+    return dict(item.split("=", 1) for item in fix_str.split(delimiter) if "=" in item)
 
 def build_fix(tags: Dict[str, str]) -> str:
     return FIELD_DELIMITER.join(f"{k}={v}" for k, v in tags.items())
@@ -48,19 +48,20 @@ def validate_tags(expected: Dict[str, str], actual: Dict[str, str], testcase_id:
         act_val = actual.get(tag)
         if exp_val == "":
             if tag in actual:
-                messages.append(f"FAIL: Tag {tag} should be deleted but found {act_val} [TC: {testcase_id}, 11={tag11}]")
+                messages.append(f"FAIL: Tag {tag} was expected to be deleted but found {act_val} [TC: {testcase_id}, 11={tag11}]")
                 result = False
             else:
                 messages.append(f"PASS: Tag {tag} correctly deleted [TC: {testcase_id}, 11={tag11}]")
         elif act_val != exp_val:
-            messages.append(f"FAIL: Tag {tag} mismatch. Expected: {exp_val}, Got: {act_val} [TC: {testcase_id}, 11={tag11}]")
+            messages.append(f"FAIL: Tag {tag} value mismatch. Expected: {exp_val}, Actual: {act_val} [TC: {testcase_id}, 11={tag11}]")
             result = False
         else:
-            messages.append(f"PASS: Tag {tag} matched value {exp_val} [TC: {testcase_id}, 11={tag11}]")
+            messages.append(f"PASS: Tag {tag} matched with value {exp_val} [TC: {testcase_id}, 11={tag11}]")
     return result, messages
 
 def send_fix_message(fix_msg: str, tag11: str, msg_type: str) -> str:
-    subprocess.run([LINUX_PROCESS_SCRIPT, fix_msg])
+    fix_msg_sod = fix_msg.replace(FIELD_DELIMITER, '\x01')
+    subprocess.run([LINUX_PROCESS_SCRIPT, fix_msg_sod])
     for _ in range(5):
         time.sleep(0.3)
         with open(CURRENT_LOG_FILE, "r") as f:
@@ -83,8 +84,9 @@ def expand_test_cases(row: Dict[str, str]) -> List[Dict[str, str]]:
             multi_tag = tag
             multi_values = values.split(MULTI_VAL_DELIMITER)
         else:
-            tag, value = part.split("=", 1)
-            update_dict[tag] = value
+            if "=" in part:
+                tag, value = part.split("=")
+                update_dict[tag] = value
 
     expanded_cases = []
     for idx, val in enumerate(multi_values):
@@ -93,14 +95,15 @@ def expand_test_cases(row: Dict[str, str]) -> List[Dict[str, str]]:
 
         validate = {}
         for part in validate_parts:
-            tag, values = part.split("=", 1)
-            val_list = values.split(MULTI_VAL_DELIMITER)
-            if tag == multi_tag and idx < len(val_list):
-                validate[tag] = val_list[idx]
-            elif "~" in values:
-                continue
-            else:
-                validate[tag] = values
+            if "=" in part:
+                tag, values = part.split("=")
+                val_list = values.split(MULTI_VAL_DELIMITER)
+                if tag == multi_tag and idx < len(val_list):
+                    validate[tag] = val_list[idx]
+                elif "~" in values:
+                    continue
+                else:
+                    validate[tag] = values
         expanded_cases.append({
             "UseCaseID": row["UseCaseID"],
             "TestCaseID": row["TestCaseID"],
@@ -137,7 +140,7 @@ def run_test(input_file: str):
 
                 sent_msg = updated_fix
                 received_msg = send_fix_message(updated_fix, tag11, msg_type)
-                received_tags = parse_fix(received_msg) if received_msg else {}
+                received_tags = parse_fix(received_msg, delimiter='\x01') if received_msg else {}
 
                 is_pass, messages = validate_tags(case["TagsToValidate"], received_tags, test_case_id, tag11)
                 if is_pass:
@@ -157,11 +160,13 @@ def run_test(input_file: str):
                     "ReceivedFixMessage": received_msg
                 })
 
+    # Write results
     with open(result_file, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=result_rows[0].keys())
         writer.writeheader()
         writer.writerows(result_rows)
 
+    # Aggregate per UseCaseID
     summary_data = {}
     for row in result_rows:
         ucid = row["UseCaseID"]
@@ -173,11 +178,13 @@ def run_test(input_file: str):
         else:
             summary_data[ucid]["Failed"] += 1
 
+    # Write summary file
     with open(summary_file, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["UseCaseID", "Total", "Passed", "Failed"])
         for ucid, stats in summary_data.items():
             writer.writerow([ucid, stats["Total"], stats["Passed"], stats["Failed"]])
+
 
 # ---- Entry Point ----
 if __name__ == "__main__":
