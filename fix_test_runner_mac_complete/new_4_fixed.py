@@ -80,7 +80,7 @@ def send_fix_message(fix_msg: str, tag11: str, msg_type: str) -> str:
     log.error(f"No response found for tag 11={tag11}")
     return ""
 
-def expand_test_cases(row: Dict[str, str]) -> List[Dict[str, str]]:
+def expand_test_cases(row: Dict[str, str]) -> (List[Dict[str, str]], str):
     update_parts = row["TagsToUpdate"].split(FIELD_DELIMITER)
     validate_parts = row["TagsToValidate"].split(FIELD_DELIMITER)
 
@@ -93,10 +93,15 @@ def expand_test_cases(row: Dict[str, str]) -> List[Dict[str, str]]:
     for part in update_parts:
         if "~" in part:
             tag, values = part.split("=", 1)
-            multi_tag = tag
-            multi_values = values.split(MULTI_VAL_DELIMITER)
-            if tag == "35" and len(multi_values) > 1:
-                second_35_value = multi_values[1]  # dynamically pick G or F
+            if tag == "35":
+                values_split = values.split(MULTI_VAL_DELIMITER)
+                if len(values_split) > 1:
+                    multi_values = [values_split[0]]  # Only D for expansion
+                    second_35_value = values_split[1]  # G or F
+                multi_tag = tag
+            else:
+                multi_tag = tag
+                multi_values = values.split(MULTI_VAL_DELIMITER)
         else:
             if "=" in part:
                 tag, value = part.split("=", 1)
