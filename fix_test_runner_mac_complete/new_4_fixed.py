@@ -119,7 +119,8 @@ def expand_test_cases(row: Dict[str, str]) -> (List[Dict[str, str]], str):
         for idx, val in enumerate(multi_values):
             update = update_dict_fixed.copy()
             update[multi_tag] = val
-            update["35"] = multi_35_values[0]  # Always expand D
+            if multi_35_values:
+                update["35"] = multi_35_values[0]  # Only if D~G specified
 
             validate = {}
             for tag, values_list in validate_multi_values.items():
@@ -138,7 +139,8 @@ def expand_test_cases(row: Dict[str, str]) -> (List[Dict[str, str]], str):
             expanded_cases.append(expanded_case)
     else:
         update = update_dict_fixed.copy()
-        update["35"] = multi_35_values[0]
+        if multi_35_values:
+            update["35"] = multi_35_values[0]
         validate = {tag: vals[0] for tag, vals in validate_multi_values.items()}
         expanded_case = {
             "UseCaseID": row["UseCaseID"],
