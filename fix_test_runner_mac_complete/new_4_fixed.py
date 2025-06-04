@@ -90,27 +90,25 @@ def expand_test_cases(row: Dict[str, str]) -> (List[Dict[str, str]], str):
     second_35_value = None
     validate_multi_values = {}
 
-    multi_tag_count = 0
-
     for part in update_parts:
-        if "~" in part:
-            tag, values = part.split("=", 1)
+        if "=" not in part:
+            continue
+        tag, value = part.split("=", 1)
+        if "~" in value:
             if tag == "35":
-                values_split = values.split(MULTI_VAL_DELIMITER)
+                # Special handling for 35
+                values_split = value.split(MULTI_VAL_DELIMITER)
                 if len(values_split) > 1:
-                    multi_values = [values_split[0]]
+                    multi_values_35 = [values_split[0]]
                     second_35_value = values_split[1]
-                multi_tag = tag
+                multi_tag_35 = tag
             else:
-                multi_tag_count += 1
-                if multi_tag_count > 1:
+                if multi_tag and tag != multi_tag:
                     raise ValueError(f"Only one multi-valued tag (besides 35) allowed! Found another: {tag}")
                 multi_tag = tag
-                multi_values = values.split(MULTI_VAL_DELIMITER)
+                multi_values = value.split(MULTI_VAL_DELIMITER)
         else:
-            if "=" in part:
-                tag, value = part.split("=", 1)
-                update_dict_fixed[tag] = value
+            update_dict_fixed[tag] = value
 
     for part in validate_parts:
         if "=" in part:
