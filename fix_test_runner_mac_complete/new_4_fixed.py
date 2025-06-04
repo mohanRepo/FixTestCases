@@ -16,6 +16,9 @@ OUTPUT_DIR = "output"
 LINUX_PROCESS_SCRIPT = "./send_fix_message.sh"
 CURRENT_LOG_FILE = "./logs/Current"
 
+WAIT_TIME_BETWEEN_RETRIES = 0.3  # seconds
+MAX_RETRIES = 5  # number of retries to read response
+
 # ---- Setup Execution Context ----
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -70,8 +73,8 @@ def send_fix_message(fix_msg: str, tag11: str, msg_type: str) -> str:
     fix_msg_sod = fix_msg.replace(FIELD_DELIMITER, SOH)
     log.info(f"Sending FIX message to Linux process: {fix_msg}")
     subprocess.run([LINUX_PROCESS_SCRIPT, fix_msg_sod])
-    for attempt in range(5):
-        time.sleep(0.3)
+    for attempt in range(MAX_RETRIES):
+        time.sleep(WAIT_TIME_BETWEEN_RETRIES)
         with open(CURRENT_LOG_FILE, "r") as f:
             for line in f:
                 if f"11={tag11}" in line and f"35={msg_type}" in line:
@@ -90,7 +93,6 @@ def expand_test_cases(row: Dict[str, str]) -> (List[Dict[str, str]], str):
     second_35_value = None
     validate_multi_values = {}
 
-    multi_tag_count = 0
     multi_35_values = None
 
     for part in update_parts:
@@ -120,7 +122,7 @@ def expand_test_cases(row: Dict[str, str]) -> (List[Dict[str, str]], str):
             update = update_dict_fixed.copy()
             update[multi_tag] = val
             if multi_35_values:
-                update["35"] = multi_35_values[0]  # Only if D~G specified
+                update["35"] = multi_35_values[0]
 
             validate = {}
             for tag, values_list in validate_multi_values.items():
@@ -235,9 +237,10 @@ def run_test(input_file: str):
         writer.writeheader()
         writer.writerows(result_rows)
 
+    # ---- Update Summary Logic ----
     summary_data = {}
     for row in result_rows:
-        key = (row["UseCaseID"], row["MessageType"])
+        key = (row["UseCaseID"], row["TestCaseID"], row["MessageType"])
         if key not in summary_data:
             summary_data[key] = {"Total": 0, "Passed": 0, "Failed": 0}
         summary_data[key]["Total"] += 1
@@ -248,9 +251,9 @@ def run_test(input_file: str):
 
     with open(summary_file, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["UseCaseID", "MessageType", "Total", "Passed", "Failed"])
-        for (ucid, msg_type), stats in summary_data.items():
-            writer.writerow([ucid, msg_type, stats["Total"], stats["Passed"], stats["Failed"]])
+        writer.writerow(["UseCaseID", "TestCaseID", "MessageType", "Total", "Passed", "Failed"])
+        for (ucid, tcid, msg_type), stats in summary_data.items():
+            writer.writerow([ucid, tcid, msg_type, stats["Total"], stats["Passed"], stats["Failed"]])
 
     log.info(f"Execution finished. Total Tests: {total}, Passed: {passed}, Failed: {failed}")
 
