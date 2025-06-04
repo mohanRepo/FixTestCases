@@ -1,3 +1,4 @@
+
 import csv
 import os
 import re
@@ -16,7 +17,7 @@ OUTPUT_DIR = "output"
 LINUX_PROCESS_SCRIPT = "./send_fix_message.sh"
 CURRENT_LOG_FILE = "./logs/Current"
 
-# ---- Setup Execution Context ----
+# Setup Execution Context
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 execution_id = datetime.now().strftime("%y%m%d_%H%M%S")
@@ -24,11 +25,11 @@ result_file = os.path.join(OUTPUT_DIR, f"test_result_{execution_id}.csv")
 summary_file = os.path.join(OUTPUT_DIR, f"test_summary_{execution_id}.csv")
 log_file = os.path.join(OUTPUT_DIR, f"fix_test_run_{execution_id}.log")
 
-# ---- Logging ----
+# Logging
 logging.basicConfig(filename=log_file, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 log = logging.getLogger()
 
-# ---- Utility Functions ----
+# Utility Functions
 def parse_fix(fix_str: str, delimiter=FIELD_DELIMITER) -> Dict[str, str]:
     return dict(item.split("=", 1) for item in fix_str.split(delimiter) if "=" in item)
 
@@ -75,7 +76,7 @@ def send_fix_message(fix_msg: str, tag11: str, msg_type: str) -> str:
         with open(CURRENT_LOG_FILE, "r") as f:
             for line in f:
                 if f"11={tag11}" in line and f"35={msg_type}" in line:
-                    log.info(f"Received response from Linux process: {line.strip().replace(SOH, FIELD_DELIMITER)}")
+                    log.info(f"Received response: {line.strip().replace(SOH, FIELD_DELIMITER)}")
                     return line.strip()
     log.error(f"No response found for tag 11={tag11}")
     return ""
@@ -96,8 +97,8 @@ def expand_test_cases(row: Dict[str, str]) -> (List[Dict[str, str]], str):
             if tag == "35":
                 values_split = values.split(MULTI_VAL_DELIMITER)
                 if len(values_split) > 1:
-                    multi_values = [values_split[0]]  # Only D for expansion
-                    second_35_value = values_split[1]  # G or F
+                    multi_values = [values_split[0]]
+                    second_35_value = values_split[1]
                 multi_tag = tag
             else:
                 multi_tag = tag
@@ -148,13 +149,9 @@ def expand_test_cases(row: Dict[str, str]) -> (List[Dict[str, str]], str):
     log.info(f"Expanded test cases: {expanded_cases}")
     return expanded_cases, second_35_value
 
-# ---- Main Execution ----
+# Main Execution
 def run_test(input_file: str):
     log.info(f"Execution started with Input File: {input_file}")
-    log.info(f"Result File: {result_file}")
-    log.info(f"Summary File: {summary_file}")
-    log.info(f"Log File: {log_file}")
-
     total = 0
     passed = 0
     failed = 0
@@ -163,7 +160,6 @@ def run_test(input_file: str):
     with open(input_file, newline="") as csvfile:
         reader = csv.DictReader(csvfile)
         for row in reader:
-            log.info(f"Processing input row: {row}")
             base_cases, second_35_value = expand_test_cases(row)
 
             final_cases = []
@@ -202,7 +198,9 @@ def run_test(input_file: str):
                 tag11 = case["tag11"]
                 base_msg = case["BaseMessage"]
                 updated_fix = update_fix(base_msg, case["TagsToUpdate"])
-                msg_type = parse_fix(updated_fix).get("35", "D")
+                fix_tags = parse_fix(updated_fix)
+                message_type = fix_tags.get("35", "")
+                msg_type = message_type
 
                 sent_msg = updated_fix
                 received_msg = send_fix_message(updated_fix, tag11, msg_type)
@@ -222,6 +220,7 @@ def run_test(input_file: str):
                     "ExecutionID": tag11,
                     "ValidationResult": "PASS" if is_pass else "FAIL",
                     "ValidationDetails": " | ".join(messages),
+                    "MessageType": message_type,
                     "SentFixMessage": sent_msg,
                     "ReceivedFixMessage": received_msg.replace(SOH, FIELD_DELIMITER) if received_msg else ""
                 })
@@ -233,27 +232,23 @@ def run_test(input_file: str):
 
     summary_data = {}
     for row in result_rows:
-        fix_msg = row["SentFixMessage"]
-        fix_tags = parse_fix(fix_msg)
-        if fix_tags.get("35") == "D":  # Only D messages counted
-            ucid = row["UseCaseID"]
-            if ucid not in summary_data:
-                summary_data[ucid] = {"Total": 0, "Passed": 0, "Failed": 0}
-            summary_data[ucid]["Total"] += 1
-            if row["ValidationResult"] == "PASS":
-                summary_data[ucid]["Passed"] += 1
-            else:
-                summary_data[ucid]["Failed"] += 1
+        key = (row["UseCaseID"], row["MessageType"])
+        if key not in summary_data:
+            summary_data[key] = {"Total": 0, "Passed": 0, "Failed": 0}
+        summary_data[key]["Total"] += 1
+        if row["ValidationResult"] == "PASS":
+            summary_data[key]["Passed"] += 1
+        else:
+            summary_data[key]["Failed"] += 1
 
     with open(summary_file, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["UseCaseID", "Total", "Passed", "Failed"])
-        for ucid, stats in summary_data.items():
-            writer.writerow([ucid, stats["Total"], stats["Passed"], stats["Failed"]])
+        writer.writerow(["UseCaseID", "MessageType", "Total", "Passed", "Failed"])
+        for (ucid, msg_type), stats in summary_data.items():
+            writer.writerow([ucid, msg_type, stats["Total"], stats["Passed"], stats["Failed"]])
 
     log.info(f"Execution finished. Total Tests: {total}, Passed: {passed}, Failed: {failed}")
 
-    # Print file paths at the end
     print(f"Input File: {input_file}")
     print(f"Result File: {result_file}")
     print(f"Summary File: {summary_file}")
