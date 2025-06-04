@@ -90,23 +90,22 @@ def expand_test_cases(row: Dict[str, str]) -> (List[Dict[str, str]], str):
     second_35_value = None
     validate_multi_values = {}
 
+    multi_tag_count = 0
+    multi_35_values = None
+
     for part in update_parts:
         if "=" not in part:
             continue
         tag, value = part.split("=", 1)
-        if "~" in value:
-            if tag == "35":
-                # Special handling for 35
-                values_split = value.split(MULTI_VAL_DELIMITER)
-                if len(values_split) > 1:
-                    multi_values_35 = [values_split[0]]
-                    second_35_value = values_split[1]
-                multi_tag_35 = tag
-            else:
-                if multi_tag and tag != multi_tag:
-                    raise ValueError(f"Only one multi-valued tag (besides 35) allowed! Found another: {tag}")
-                multi_tag = tag
-                multi_values = value.split(MULTI_VAL_DELIMITER)
+        if tag == "35" and "~" in value:
+            multi_35_values = value.split(MULTI_VAL_DELIMITER)
+            if len(multi_35_values) != 2:
+                raise ValueError("Only two values allowed for 35 (D~G or D~F).")
+        elif "~" in value:
+            if multi_tag is not None and tag != multi_tag:
+                raise ValueError(f"Only one multi-valued tag (besides 35) allowed! Found another: {tag}")
+            multi_tag = tag
+            multi_values = value.split(MULTI_VAL_DELIMITER)
         else:
             update_dict_fixed[tag] = value
 
@@ -120,6 +119,7 @@ def expand_test_cases(row: Dict[str, str]) -> (List[Dict[str, str]], str):
         for idx, val in enumerate(multi_values):
             update = update_dict_fixed.copy()
             update[multi_tag] = val
+            update["35"] = multi_35_values[0]  # Always expand D
 
             validate = {}
             for tag, values_list in validate_multi_values.items():
@@ -138,6 +138,7 @@ def expand_test_cases(row: Dict[str, str]) -> (List[Dict[str, str]], str):
             expanded_cases.append(expanded_case)
     else:
         update = update_dict_fixed.copy()
+        update["35"] = multi_35_values[0]
         validate = {tag: vals[0] for tag, vals in validate_multi_values.items()}
         expanded_case = {
             "UseCaseID": row["UseCaseID"],
@@ -149,7 +150,7 @@ def expand_test_cases(row: Dict[str, str]) -> (List[Dict[str, str]], str):
         expanded_cases.append(expanded_case)
 
     log.info(f"Expanded test cases: {expanded_cases}")
-    return expanded_cases, second_35_value
+    return expanded_cases, multi_35_values[1] if multi_35_values else None
 
 # ---- Main Execution ----
 def run_test(input_file: str):
