@@ -1,4 +1,3 @@
-
 import csv
 import os
 import re
@@ -17,7 +16,7 @@ OUTPUT_DIR = "output"
 LINUX_PROCESS_SCRIPT = "./send_fix_message.sh"
 CURRENT_LOG_FILE = "./logs/Current"
 
-# Setup Execution Context
+# ---- Setup Execution Context ----
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 execution_id = datetime.now().strftime("%y%m%d_%H%M%S")
@@ -25,11 +24,11 @@ result_file = os.path.join(OUTPUT_DIR, f"test_result_{execution_id}.csv")
 summary_file = os.path.join(OUTPUT_DIR, f"test_summary_{execution_id}.csv")
 log_file = os.path.join(OUTPUT_DIR, f"fix_test_run_{execution_id}.log")
 
-# Logging
+# ---- Logging ----
 logging.basicConfig(filename=log_file, level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 log = logging.getLogger()
 
-# Utility Functions
+# ---- Utility Functions ----
 def parse_fix(fix_str: str, delimiter=FIELD_DELIMITER) -> Dict[str, str]:
     return dict(item.split("=", 1) for item in fix_str.split(delimiter) if "=" in item)
 
@@ -91,6 +90,8 @@ def expand_test_cases(row: Dict[str, str]) -> (List[Dict[str, str]], str):
     second_35_value = None
     validate_multi_values = {}
 
+    multi_tag_count = 0
+
     for part in update_parts:
         if "~" in part:
             tag, values = part.split("=", 1)
@@ -101,6 +102,9 @@ def expand_test_cases(row: Dict[str, str]) -> (List[Dict[str, str]], str):
                     second_35_value = values_split[1]
                 multi_tag = tag
             else:
+                multi_tag_count += 1
+                if multi_tag_count > 1:
+                    raise ValueError(f"Only one multi-valued tag (besides 35) allowed! Found another: {tag}")
                 multi_tag = tag
                 multi_values = values.split(MULTI_VAL_DELIMITER)
         else:
@@ -149,7 +153,7 @@ def expand_test_cases(row: Dict[str, str]) -> (List[Dict[str, str]], str):
     log.info(f"Expanded test cases: {expanded_cases}")
     return expanded_cases, second_35_value
 
-# Main Execution
+# ---- Main Execution ----
 def run_test(input_file: str):
     log.info(f"Execution started with Input File: {input_file}")
     total = 0
